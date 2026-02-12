@@ -5,7 +5,7 @@
 
 **ParquetGrip** 是一款基于 Rust 开发的高性能 Parquet 文件跨平台浏览器。它利用 **DuckDB** 作为核心查询引擎，结合 **egui** 打造极速、流畅的数据预览体验。
 
-![ParquetGrip Icon](./assets/icon.png)
+![ParquetGrip Screenshot](./assets/screenshot.png)
 
 ## ✨ 特性
 

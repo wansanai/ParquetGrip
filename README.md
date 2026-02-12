@@ -5,7 +5,7 @@ English | [简体中文](./README.md)
 
 **ParquetGrip** is a high-performance cross-platform Parquet file browser built with Rust. It leverages **DuckDB** as the core query engine and **egui** to provide a fast, fluid data exploration experience.
 
-![ParquetGrip Icon](./assets/icon.png)
+![ParquetGrip Screenshot](./assets/screenshot.png)
 
 ## ✨ Features
 
