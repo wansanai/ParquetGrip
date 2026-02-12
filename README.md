@@ -40,6 +40,14 @@ cargo bundle --release
 ```
 Bundled artifacts (e.g., `.app` for macOS) will be located in `target/release/bundle/`.
 
+> [!TIP]
+> **Fix for "App is damaged" error on macOS**:
+> Run this command in Terminal to remove the quarantine flag:
+> ```bash
+> sudo xattr -r -d com.apple.quarantine /Applications/ParquetGrip.app
+> ```
+> *You will be asked to enter your Mac login password (typing will be invisible).
+
 ## 🛠 Tech Stack
 
 - **Engine**: [DuckDB](https://duckdb.org/)

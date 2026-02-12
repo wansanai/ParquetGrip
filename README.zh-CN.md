@@ -40,6 +40,14 @@ cargo bundle --release
 ```
 生成的产物（如 macOS 的 `.app`）将位于 `target/release/bundle/`。
 
+> [!TIP]
+> **修复 macOS “应用已损坏”错误**：
+> 在终端运行以下命令解除隔离：
+> ```bash
+> sudo xattr -r -d com.apple.quarantine /Applications/ParquetGrip.app
+> ```
+> *系统会要求输入 Mac 登录密码（输入过程不可见）。
+
 ## 🛠 技术栈
 
 - **Engine**: [DuckDB](https://duckdb.org/)
