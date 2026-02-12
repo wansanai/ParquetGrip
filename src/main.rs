@@ -616,10 +616,19 @@ fn setup_fonts(ctx: &egui::Context) {
     // Egui requires loading binary data.
     
     let font_paths = [
+        // macOS
         "/System/Library/Fonts/PingFang.ttc",
         "/System/Library/Fonts/Hiragino Sans GB.ttc",
         "/System/Library/Fonts/STHeiti Light.ttc",
-        "/System/Library/Fonts/Supplemental/Songti.ttc",
+        // Windows
+        "C:\\Windows\\Fonts\\msyh.ttc",     // Microsoft YaHei
+        "C:\\Windows\\Fonts\\msyh.ttf",
+        "C:\\Windows\\Fonts\\simsun.ttc",   // SimSun
+        // Linux
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc",
     ];
     
     for path in font_paths {

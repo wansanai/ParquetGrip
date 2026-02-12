@@ -15,3 +15,15 @@ rfd = "0.14.1"
 tokio = { version = "1", features = ["full", "rt-multi-thread"] } # Needed for async runtime
 chrono = "0.4"
 
+[package.metadata.bundle]
+name = "ParquetGrip"
+identifier = "app.wansan.parquetgrip"
+icon = ["assets/icon.png", "assets/icon.icns"]
+version = "0.1.0"
+copyright = "Copyright (c) 2026 Edward"
+category = "Utility"
+short_description = "A high-performance Parquet file viewer."
+long_description = """
+ParquetGrip is a powerful desktop application built with Rust and egui 
+designed to provide a seamless experience for exploring large Parquet files.
+"""
