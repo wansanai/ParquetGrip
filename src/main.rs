@@ -37,6 +37,10 @@ struct Tab {
     data: Vec<Vec<String>>,
     row_count: usize,
     status: String,
+    // Pagination state
+    current_page: usize,
+    page_size: usize,
+    total_rows: usize,
 }
 
 impl Tab {
@@ -53,6 +57,9 @@ impl Tab {
             data: Vec::new(),
             row_count: 0,
             status: "Opening...".to_string(),
+            current_page: 1,
+            page_size: 1000,
+            total_rows: 0,
         }
     }
 }
@@ -117,8 +124,15 @@ impl ParquetApp {
                                 if let Ok(s_msg) = backend_c.get_schema(path_c.clone()) {
                                     let _ = tx_c.send(s_msg);
                                 }
-                                // Run initial query
-                                if let Ok(q_msg) = backend_c.run_query(path_c, "SELECT * FROM $TABLE".to_string()) {
+                                // Get row count
+                                if let Ok(count) = backend_c.get_row_count(path_c.clone()) {
+                                    let _ = tx_c.send(BackendMessage::RowCount { path: path_c.clone(), count });
+                                }
+                                
+                                // Run initial query (Page 1)
+                                let limit = 1000; // Default page size
+                                let offset = 0;
+                                if let Ok(q_msg) = backend_c.run_query(path_c, "SELECT * FROM $TABLE".to_string(), Some(limit), Some(offset)) {
                                     let _ = tx_c.send(q_msg);
                                 }
                             }
@@ -142,6 +156,26 @@ impl ParquetApp {
 
 struct ParquetTabViewer<'a> {
     tabs: &'a mut HashMap<String, Tab>,
+    tx: mpsc::Sender<BackendMessage>,
+    backend: Arc<Backend>,
+}
+
+impl<'a> ParquetTabViewer<'a> {
+    fn load_page(tx: mpsc::Sender<BackendMessage>, backend: Arc<Backend>, path: String, page: usize, page_size: usize) {
+        std::thread::spawn(move || {
+            let limit = page_size;
+            let offset = (page - 1) * page_size;
+            match backend.run_query(path.clone(), "SELECT * FROM $TABLE".to_string(), Some(limit), Some(offset)) {
+                Ok(msg) => { let _ = tx.send(msg); }
+                Err(e) => {
+                    let _ = tx.send(BackendMessage::Error { 
+                        path: Some(path), 
+                        message: e 
+                    });
+                }
+            }
+        });
+    }
 }
 
 impl<'a> TabViewer for ParquetTabViewer<'a> {
@@ -171,69 +205,113 @@ impl<'a> TabViewer for ParquetTabViewer<'a> {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, tab_id: &mut Self::Tab) {
-        if let Some(tab) = self.tabs.get(tab_id) {
+        if let Some(tab) = self.tabs.get_mut(tab_id) {
             ui.vertical(|ui| {
                 // Determine content size manually or let ScrollArea handle it.
                 // Since TableBuilder likes to take available size, we put it in a central area minus status bar.
                 
-                // Content area
-                egui::CentralPanel::default()
-                    .frame(egui::Frame::NONE) // No extra frame inside the tab
+                // Combined Status and Pagination bar at bottom
+                egui::TopBottomPanel::bottom(format!("bottom_bar_{}", tab.path))
+                    .min_height(32.0)
                     .show_inside(ui, |ui| {
-                        
-                        // Status bar at bottom
-                        egui::TopBottomPanel::bottom(format!("status_{}", tab.path))
-                            .show_inside(ui, |ui| {
-                                ui.label(&tab.status);
-                            });
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 12.0;
 
-                        // Main table area
-                        egui::CentralPanel::default().show_inside(ui, |ui| {
-                             egui::ScrollArea::horizontal()
-                                .id_salt(format!("scroll_{}", tab.path)) // Unique ID for scroll state
-                                .auto_shrink([false, false])
-                                .show(ui, |ui| {
-                                    let mut table = egui_extras::TableBuilder::new(ui)
-                                        .striped(true)
-                                        .resizable(true)
-                                        .vscroll(true)
-                                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
-                                    
-                                    // Row number column
-                                    table = table.column(Column::initial(40.0).at_least(40.0).resizable(true));
-                                    
-                                    for _ in 0..tab.schema.len() {
-                                        table = table.column(Column::initial(150.0).at_least(100.0).resizable(true));
-                                    }
-                                    
-                                    table.header(28.0, |mut header| {
-                                            header.col(|ui| { ui.strong("#"); });
-                                            for name in &tab.schema {
-                                                header.col(|ui| { ui.strong(name); });
-                                            }
-                                        })
-                                        .body(|body| {
-                                            body.rows(26.0, tab.data.len(), |mut row| {
-                                                let row_index = row.index();
-                                                row.col(|ui| { ui.label(row_index.to_string()); }); 
-                                                
-                                                if let Some(row_data) = tab.data.get(row_index) {
-                                                    for (col_idx, _col_name) in tab.schema.iter().enumerate() {
-                                                        if let Some(cell) = row_data.get(col_idx) {
-                                                            row.col(|ui| {
-                                                                if cell == "(null)" {
-                                                                    ui.label(egui::RichText::new(cell).color(ui.visuals().weak_text_color()));
-                                                                } else {
-                                                                    ui.label(cell);
-                                                                }
-                                                            });
-                                                        }
+                            // Row and Page Info combined
+                            let start_row = (tab.current_page - 1) * tab.page_size + 1;
+                            let end_row = (start_row + tab.data.len()).saturating_sub(1);
+                            
+                            let total_pages = (tab.total_rows as f64 / tab.page_size as f64).ceil() as usize;
+                            let total_pages = if total_pages == 0 { 1 } else { total_pages };
+
+                            ui.label(egui::RichText::new(format!(
+                                "Showing {}-{} of {} rows | Page {}/{}", 
+                                start_row, end_row, tab.total_rows, tab.current_page, total_pages
+                            )).weak());
+                            
+                            if tab.status.contains("Loading") || tab.status.contains("Error") {
+                                ui.separator();
+                                ui.label(egui::RichText::new(&tab.status).color(ui.visuals().warn_fg_color));
+                            }
+                            
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+
+                                // Next button
+                                if ui.add_enabled(
+                                    tab.current_page < total_pages,
+                                    egui::Button::new("Next ▶").min_size(egui::vec2(80.0, 24.0))
+                                ).on_hover_text("Next Page").clicked() 
+                                {
+                                    tab.current_page += 1;
+                                    Self::load_page(self.tx.clone(), self.backend.clone(), tab.path.clone(), tab.current_page, tab.page_size);
+                                    tab.status = format!("Loading page {}...", tab.current_page);
+                                }
+
+                                // Prev button
+                                if ui.add_enabled(
+                                    tab.current_page > 1,
+                                    egui::Button::new("◀ Prev").min_size(egui::vec2(80.0, 24.0))
+                                ).on_hover_text("Previous Page").clicked()
+                                {
+                                    tab.current_page -= 1;
+                                    Self::load_page(self.tx.clone(), self.backend.clone(), tab.path.clone(), tab.current_page, tab.page_size);
+                                    tab.status = format!("Loading page {}...", tab.current_page);
+                                }
+                            });
+                        });
+                    });
+
+                // Main table area takes the rest of the space
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show_inside(ui, |ui| {
+                        egui::ScrollArea::horizontal()
+                            .id_salt(format!("scroll_{}", tab.path))
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                let mut table = egui_extras::TableBuilder::new(ui)
+                                    .striped(true)
+                                    .resizable(true)
+                                    .vscroll(true)
+                                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
+                                
+                                // Row number column
+                                table = table.column(Column::initial(40.0).at_least(40.0).resizable(true));
+                                
+                                for _ in 0..tab.schema.len() {
+                                    table = table.column(Column::initial(150.0).at_least(100.0).resizable(true));
+                                }
+                                
+                                table.header(28.0, |mut header| {
+                                        header.col(|ui| { ui.strong("#"); });
+                                        for name in &tab.schema {
+                                            header.col(|ui| { ui.strong(name); });
+                                        }
+                                    })
+                                    .body(|body| {
+                                        let start_row_index = (tab.current_page - 1) * tab.page_size;
+                                        body.rows(26.0, tab.data.len(), |mut row| {
+                                            let row_index = row.index();
+                                            // Display global row number
+                                            row.col(|ui| { ui.label((start_row_index + row_index + 1).to_string()); }); 
+                                            
+                                            if let Some(row_data) = tab.data.get(row_index) {
+                                                for (col_idx, _col_name) in tab.schema.iter().enumerate() {
+                                                    if let Some(cell) = row_data.get(col_idx) {
+                                                        row.col(|ui| {
+                                                            if cell == "(null)" {
+                                                                ui.label(egui::RichText::new(cell).color(ui.visuals().weak_text_color()));
+                                                            } else {
+                                                                ui.label(cell);
+                                                            }
+                                                        });
                                                     }
                                                 }
-                                            });
+                                            }
                                         });
-                                });
-                        });
+                                    });
+                            });
                     });
             });
         } else {
@@ -260,11 +338,16 @@ impl eframe::App for ParquetApp {
                         tab.status = "Schema loaded, running query...".to_string();
                     }
                 }
+                BackendMessage::RowCount { path, count } => {
+                    if let Some(tab) = self.tabs.get_mut(&path) {
+                        tab.total_rows = count;
+                    }
+                }
                 BackendMessage::QueryData { path, rows } => {
                     if let Some(tab) = self.tabs.get_mut(&path) {
                         tab.data = rows;
                         tab.row_count = tab.data.len();
-                        tab.status = format!("Loaded {} rows", tab.row_count);
+                        tab.status = format!("Loaded {} rows (Page {})", tab.row_count, tab.current_page);
                     }
                 }
                 BackendMessage::Error { path, message } => {
@@ -309,7 +392,11 @@ impl eframe::App for ParquetApp {
                      });
                  });
              } else {
-                 let mut tab_viewer = ParquetTabViewer { tabs: &mut self.tabs };
+                 let mut tab_viewer = ParquetTabViewer { 
+                     tabs: &mut self.tabs,
+                     tx: self.tx_to_ui.clone(),
+                     backend: self.backend.clone(),
+                 };
                  let mut style = Style::from_egui(ui.style().as_ref());
                  
                  // Customize style

@@ -10,6 +10,7 @@ pub enum BackendMessage {
     FileOpened { path: String },
     Schema { path: String, columns: Vec<String> },
     QueryData { path: String, rows: Vec<Vec<String>> },
+    RowCount { path: String, count: usize },
     Error { path: Option<String>, message: String },
 }
 
@@ -66,22 +67,49 @@ impl Backend {
         Ok(BackendMessage::Schema { path, columns: names })
     }
 
-    pub fn run_query(&self, path: String, query_template: String) -> Result<BackendMessage, String> {
+    pub fn get_row_count(&self, path: String) -> Result<usize, String> {
+        let conn_arc = self.get_conn()?;
+        let conn_guard = conn_arc.lock().map_err(|e| e.to_string())?;
+        let conn = conn_guard.as_ref().ok_or("No connection")?;
+        
+        let sql = format!("SELECT count(*) FROM read_parquet('{}');", path);
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        
+        if let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let count: i64 = row.get(0).map_err(|e| e.to_string())?;
+            return Ok(count as usize);
+        }
+        Ok(0)
+    }
+
+    pub fn run_query(&self, path: String, query_template: String, limit: Option<usize>, offset: Option<usize>) -> Result<BackendMessage, String> {
         let conn_arc = self.get_conn()?;
         let conn_guard = conn_arc.lock().map_err(|e| e.to_string())?;
         let conn = conn_guard.as_ref().ok_or("No connection")?;
         
         // Simple replacement: replace $TABLE with read_parquet('path')
-        let query = query_template.replace("$TABLE", &format!("read_parquet('{}')", path));
+        let mut query = query_template.replace("$TABLE", &format!("read_parquet('{}')", path));
         
+        if let Some(l) = limit {
+            query.push_str(&format!(" LIMIT {}", l));
+        }
+        if let Some(o) = offset {
+            query.push_str(&format!(" OFFSET {}", o));
+        }
+
         let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
         let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
         
         let mut column_count = 0;
         let mut result_rows = Vec::new();
         let mut row_count = 0;
+        
+        // Safety break
+        let max_rows = limit.unwrap_or(50_000);
+
         while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-            if row_count >= 50_000 {
+            if row_count >= max_rows {
                 break;
             }
             
