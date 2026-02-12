@@ -3,13 +3,14 @@
 [English](./README.md) | 简体中文
 
 
-**ParquetGrip** 是一款基于 Rust 开发的高性能 Parquet 文件跨平台浏览器。它利用 **DuckDB** 作为核心查询引擎，结合 **egui** 打造极速、流畅的数据预览体验。
+**ParquetGrip** 是一款基于 Rust 开发的高性能跨平台数据文件浏览器。它利用 **DuckDB** 作为核心查询引擎，结合 **egui** 打造极速、流畅的数据预览体验。
 
 ![ParquetGrip Screenshot](./assets/screenshot.png)
 
 ## ✨ 特性
 
-- **极速加载与分页**：支持加载数 GB 级的超大型 Parquet 文件，通过内置分页机制（LIMIT/OFFSET）确保海量数据下 UI 依然丝滑。
+- **支持多种格式**：无缝浏览 **Parquet**、**CSV**、**JSON** 以及 **JSON.gz** 文件。
+- **极速加载与分页**：支持加载数 GB 级的超大型文件，通过内置分页机制（LIMIT/OFFSET）确保海量数据下 UI 依然丝滑。
 - **DataGrip 式搜索**：
   - **SQL 过滤**：支持直接输入 `WHERE` 子句进行复杂过滤。
   - **即时排序**：支持 `ORDER BY` 子句对数据进行动态排序。

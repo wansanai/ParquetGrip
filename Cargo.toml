@@ -1,6 +1,6 @@
 [package]
 name = "ParquetGrip"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
@@ -8,10 +8,10 @@ serde = { version = "1.0", features = ["derive"] }
 eframe = { version = "0.33.3", features = ["persistence"] }
 egui_extras = { version = "0.33.3", features = ["all_loaders"] } # all_loaders enables image support
 egui_dock = { version = "0.18", features = ["serde"] } # Docking and tabs system
-duckdb = { version = "1.0.0", features = ["bundled"] } 
+duckdb = { version = "1.0.0", features = ["bundled"] }
 arrow = "54.2.0"
 parquet = "54.2.0"
-rfd = "0.14.1" 
+rfd = "0.14.1"
 tokio = { version = "1", features = ["full", "rt-multi-thread"] }
 image = { version = "0.25", features = ["png"] }
 chrono = "0.4"
@@ -25,6 +25,6 @@ copyright = "Copyright (c) 2026 Edward"
 category = "Utility"
 short_description = "A high-performance Parquet file viewer."
 long_description = """
-ParquetGrip is a powerful desktop application built with Rust and egui 
+ParquetGrip is a powerful desktop application built with Rust and egui
 designed to provide a seamless experience for exploring large Parquet files.
 """

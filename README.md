@@ -3,12 +3,13 @@
 English | [简体中文](./README.md)
 
 
-**ParquetGrip** is a high-performance cross-platform Parquet file browser built with Rust. It leverages **DuckDB** as the core query engine and **egui** to provide a fast, fluid data exploration experience.
+**ParquetGrip** is a high-performance cross-platform data file browser built with Rust. It leverages **DuckDB** as the core query engine and **egui** to provide a fast, fluid data exploration experience.
 
 ![ParquetGrip Screenshot](./assets/screenshot.png)
 
 ## ✨ Features
 
+- **Format Support**: Seamlessly browse **Parquet**, **CSV**, **JSON**, and **JSON.gz** files.
 - **Blazing Fast Loading & Pagination**: Handles multi-gigabyte Parquet files with ease. Built-in pagination (LIMIT/OFFSET) ensures a smooth UI even with massive datasets.
 - **DataGrip-Style Search**:
   - **SQL Filtering**: Input raw `WHERE` clauses for complex data filtering.

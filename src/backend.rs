@@ -9,9 +9,10 @@ use std::sync::{Arc, Mutex};
 pub enum BackendMessage {
     FileOpened { path: String },
     Schema { path: String, columns: Vec<String> },
-    QueryData { path: String, rows: Vec<Vec<String>> },
-    RowCount { path: String, count: usize },
-    Error { path: Option<String>, message: String },
+    QueryData { path: String, rows: Vec<Vec<String>>, sql: String },
+    RowCount { path: String, count: usize, sql: String },
+    SqlLog { path: String, sql: String },
+    Error { path: Option<String>, message: String, sql: Option<String> },
 }
 
 #[derive(Clone)]
@@ -37,13 +38,28 @@ impl Backend {
         Ok(self.conn.clone())
     }
 
+    fn get_read_func(path: &str) -> &'static str {
+        let path_lower = path.to_lowercase();
+        if path_lower.ends_with(".parquet") || path_lower.ends_with(".pqt") {
+            "read_parquet"
+        } else if path_lower.ends_with(".csv") {
+            "read_csv_auto"
+        } else if path_lower.ends_with(".json") || path_lower.ends_with(".json.gz") {
+            "read_json_auto"
+        } else {
+            // Default or fallback
+            "read_parquet"
+        }
+    }
+
     pub fn open_file(&self, path: String) -> Result<BackendMessage, String> {
         let conn_arc = self.get_conn()?;
         let conn_guard = conn_arc.lock().map_err(|e| e.to_string())?;
         let conn = conn_guard.as_ref().ok_or("No connection")?;
         
         // Use a temporary check to see if we can read the file
-        let sql = format!("SELECT 1 FROM read_parquet('{}') LIMIT 0;", path);
+        let func = Self::get_read_func(&path);
+        let sql = format!("SELECT 1 FROM {}('{}') LIMIT 0;", func, path);
         match conn.execute(&sql, []) {
             Ok(_) => Ok(BackendMessage::FileOpened { path }),
             Err(e) => Err(e.to_string()),
@@ -55,7 +71,8 @@ impl Backend {
         let conn_guard = conn_arc.lock().map_err(|e| e.to_string())?;
         let conn = conn_guard.as_ref().ok_or("No connection")?;
         
-        let sql = format!("DESCRIBE SELECT * FROM read_parquet('{}');", path);
+        let func = Self::get_read_func(&path);
+        let sql = format!("DESCRIBE SELECT * FROM {}('{}');", func, path);
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
         
@@ -67,12 +84,13 @@ impl Backend {
         Ok(BackendMessage::Schema { path, columns: names })
     }
 
-    pub fn get_row_count(&self, path: String, filter: Option<String>) -> Result<usize, String> {
+    pub fn get_row_count(&self, path: String, filter: Option<String>) -> Result<BackendMessage, String> {
         let conn_arc = self.get_conn()?;
         let conn_guard = conn_arc.lock().map_err(|e| e.to_string())?;
         let conn = conn_guard.as_ref().ok_or("No connection")?;
         
-        let mut sql = format!("SELECT count(*) FROM read_parquet('{}')", path);
+        let func = Self::get_read_func(&path);
+        let mut sql = format!("SELECT count(*) FROM {}('{}')", func, path);
         if let Some(f) = filter {
             if !f.trim().is_empty() {
                 sql.push_str(&format!(" WHERE {}", f));
@@ -84,9 +102,9 @@ impl Backend {
         
         if let Some(row) = rows.next().map_err(|e| e.to_string())? {
             let count: i64 = row.get(0).map_err(|e| e.to_string())?;
-            return Ok(count as usize);
+            return Ok(BackendMessage::RowCount { path, count: count as usize, sql });
         }
-        Ok(0)
+        Ok(BackendMessage::RowCount { path, count: 0, sql })
     }
 
     pub fn run_query(&self, path: String, filter: Option<String>, sort: Option<String>, limit: Option<usize>, offset: Option<usize>) -> Result<BackendMessage, String> {
@@ -94,7 +112,8 @@ impl Backend {
         let conn_guard = conn_arc.lock().map_err(|e| e.to_string())?;
         let conn = conn_guard.as_ref().ok_or("No connection")?;
         
-        let mut query = format!("SELECT * FROM read_parquet('{}')", path);
+        let func = Self::get_read_func(&path);
+        let mut query = format!("SELECT * FROM {}('{}')", func, path);
         
         if let Some(f) = filter {
             if !f.trim().is_empty() {
@@ -115,7 +134,15 @@ impl Backend {
             query.push_str(&format!(" OFFSET {}", o));
         }
 
-        let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
+        let mut stmt = match conn.prepare(&query) {
+            Ok(s) => s,
+            Err(e) => return Ok(BackendMessage::Error { 
+                path: Some(path), 
+                message: e.to_string(), 
+                sql: Some(query) 
+            }),
+        };
+        
         let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
         
         let mut column_count = 0;
@@ -145,7 +172,7 @@ impl Backend {
             row_count += 1;
         }
 
-        Ok(BackendMessage::QueryData { path, rows: result_rows })
+        Ok(BackendMessage::QueryData { path, rows: result_rows, sql: query })
     }
 }
 
