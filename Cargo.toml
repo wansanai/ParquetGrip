@@ -12,7 +12,8 @@ duckdb = { version = "1.0.0", features = ["bundled"] }
 arrow = "54.2.0"
 parquet = "54.2.0"
 rfd = "0.14.1" 
-tokio = { version = "1", features = ["full", "rt-multi-thread"] } # Needed for async runtime
+tokio = { version = "1", features = ["full", "rt-multi-thread"] }
+image = { version = "0.25", features = ["png"] }
 chrono = "0.4"
 
 [package.metadata.bundle]

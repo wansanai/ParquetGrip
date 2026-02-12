@@ -14,13 +14,26 @@ mod backend;
 use backend::{Backend, BackendMessage};
 
 fn main() -> eframe::Result<()> {
-    // Initialize logging if needed
-    // env_logger::init(); 
+    // Load icon from embedded bytes
+    let icon_bytes = include_bytes!("../assets/icon.png");
+    let icon = match image::load_from_memory(icon_bytes) {
+        Ok(image) => {
+            let image = image.to_rgba8();
+            let (width, height) = image.dimensions();
+            Some(egui::IconData {
+                rgba: image.into_raw(),
+                width,
+                height,
+            })
+        }
+        Err(_) => None,
+    };
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1024.0, 768.0])
-            .with_drag_and_drop(true),
+            .with_drag_and_drop(true)
+            .with_icon(icon.unwrap_or_default()),
         ..Default::default()
     };
     
