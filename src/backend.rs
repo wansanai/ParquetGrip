@@ -67,12 +67,18 @@ impl Backend {
         Ok(BackendMessage::Schema { path, columns: names })
     }
 
-    pub fn get_row_count(&self, path: String) -> Result<usize, String> {
+    pub fn get_row_count(&self, path: String, filter: Option<String>) -> Result<usize, String> {
         let conn_arc = self.get_conn()?;
         let conn_guard = conn_arc.lock().map_err(|e| e.to_string())?;
         let conn = conn_guard.as_ref().ok_or("No connection")?;
         
-        let sql = format!("SELECT count(*) FROM read_parquet('{}');", path);
+        let mut sql = format!("SELECT count(*) FROM read_parquet('{}')", path);
+        if let Some(f) = filter {
+            if !f.trim().is_empty() {
+                sql.push_str(&format!(" WHERE {}", f));
+            }
+        }
+        
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
         
@@ -83,14 +89,25 @@ impl Backend {
         Ok(0)
     }
 
-    pub fn run_query(&self, path: String, query_template: String, limit: Option<usize>, offset: Option<usize>) -> Result<BackendMessage, String> {
+    pub fn run_query(&self, path: String, filter: Option<String>, sort: Option<String>, limit: Option<usize>, offset: Option<usize>) -> Result<BackendMessage, String> {
         let conn_arc = self.get_conn()?;
         let conn_guard = conn_arc.lock().map_err(|e| e.to_string())?;
         let conn = conn_guard.as_ref().ok_or("No connection")?;
         
-        // Simple replacement: replace $TABLE with read_parquet('path')
-        let mut query = query_template.replace("$TABLE", &format!("read_parquet('{}')", path));
+        let mut query = format!("SELECT * FROM read_parquet('{}')", path);
         
+        if let Some(f) = filter {
+            if !f.trim().is_empty() {
+                query.push_str(&format!(" WHERE {}", f));
+            }
+        }
+        
+        if let Some(s) = sort {
+            if !s.trim().is_empty() {
+                query.push_str(&format!(" ORDER BY {}", s));
+            }
+        }
+
         if let Some(l) = limit {
             query.push_str(&format!(" LIMIT {}", l));
         }

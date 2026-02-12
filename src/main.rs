@@ -41,6 +41,11 @@ struct Tab {
     current_page: usize,
     page_size: usize,
     total_rows: usize,
+    // Filter and Sort state
+    filter: String,
+    sort: String,
+    // Error state
+    last_error: Option<String>,
 }
 
 impl Tab {
@@ -60,6 +65,9 @@ impl Tab {
             current_page: 1,
             page_size: 1000,
             total_rows: 0,
+            filter: String::new(),
+            sort: String::new(),
+            last_error: None,
         }
     }
 }
@@ -124,15 +132,13 @@ impl ParquetApp {
                                 if let Ok(s_msg) = backend_c.get_schema(path_c.clone()) {
                                     let _ = tx_c.send(s_msg);
                                 }
-                                // Get row count
-                                if let Ok(count) = backend_c.get_row_count(path_c.clone()) {
+                                // Get row count (no filter yet)
+                                if let Ok(count) = backend_c.get_row_count(path_c.clone(), None) {
                                     let _ = tx_c.send(BackendMessage::RowCount { path: path_c.clone(), count });
                                 }
                                 
-                                // Run initial query (Page 1)
-                                let limit = 1000; // Default page size
-                                let offset = 0;
-                                if let Ok(q_msg) = backend_c.run_query(path_c, "SELECT * FROM $TABLE".to_string(), Some(limit), Some(offset)) {
+                                // Run initial query (Page 1, no filter/sort)
+                                if let Ok(q_msg) = backend_c.run_query(path_c, None, None, Some(1000), Some(0)) {
                                     let _ = tx_c.send(q_msg);
                                 }
                             }
@@ -161,11 +167,13 @@ struct ParquetTabViewer<'a> {
 }
 
 impl<'a> ParquetTabViewer<'a> {
-    fn load_page(tx: mpsc::Sender<BackendMessage>, backend: Arc<Backend>, path: String, page: usize, page_size: usize) {
+    fn load_page(tx: mpsc::Sender<BackendMessage>, backend: Arc<Backend>, path: String, page: usize, page_size: usize, filter: String, sort: String) {
         std::thread::spawn(move || {
             let limit = page_size;
             let offset = (page - 1) * page_size;
-            match backend.run_query(path.clone(), "SELECT * FROM $TABLE".to_string(), Some(limit), Some(offset)) {
+            let f = if filter.trim().is_empty() { None } else { Some(filter) };
+            let s = if sort.trim().is_empty() { None } else { Some(sort) };
+            match backend.run_query(path.clone(), f, s, Some(limit), Some(offset)) {
                 Ok(msg) => { let _ = tx.send(msg); }
                 Err(e) => {
                     let _ = tx.send(BackendMessage::Error { 
@@ -175,6 +183,25 @@ impl<'a> ParquetTabViewer<'a> {
                 }
             }
         });
+    }
+
+    fn refresh_data(tx: mpsc::Sender<BackendMessage>, backend: Arc<Backend>, path: String, filter: String, sort: String, page_size: usize) {
+        let tx_c = tx.clone();
+        let backend_c = backend.clone();
+        let path_c = path.clone();
+        let filter_c = filter.clone();
+        
+        // 1. Refresh row count
+        std::thread::spawn(move || {
+            let f = if filter_c.trim().is_empty() { None } else { Some(filter_c) };
+            match backend_c.get_row_count(path_c.clone(), f) {
+                Ok(count) => { let _ = tx_c.send(BackendMessage::RowCount { path: path_c, count }); }
+                Err(e) => { let _ = tx_c.send(BackendMessage::Error { path: Some(path_c), message: e }); }
+            }
+        });
+
+        // 2. Load first page
+        Self::load_page(tx, backend, path, 1, page_size, filter, sort);
     }
 }
 
@@ -210,6 +237,75 @@ impl<'a> TabViewer for ParquetTabViewer<'a> {
                 // Determine content size manually or let ScrollArea handle it.
                 // Since TableBuilder likes to take available size, we put it in a central area minus status bar.
                 
+                // Filter and Sort toolbar
+                egui::TopBottomPanel::top(format!("toolbar_{}", tab.path))
+                    .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(8, 4)))
+                    .show_inside(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("WHERE");
+                            let filter_input = ui.add(egui::TextEdit::singleline(&mut tab.filter)
+                                .hint_text("e.g. id > 100")
+                                .desired_width(200.0));
+                            
+                            ui.add_space(8.0);
+                            
+                            ui.label("ORDER BY");
+                            let sort_input = ui.add(egui::TextEdit::singleline(&mut tab.sort)
+                                .hint_text("e.g. id DESC")
+                                .desired_width(150.0));
+                            
+                            ui.add_space(8.0);
+                            
+                            if ui.button("Apply").clicked() 
+                                || (filter_input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                                || (sort_input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                            {
+                                tab.current_page = 1;
+                                tab.status = "Applying filters...".to_string();
+                                Self::refresh_data(
+                                    self.tx.clone(), 
+                                    self.backend.clone(), 
+                                    tab.path.clone(), 
+                                    tab.filter.clone(), 
+                                    tab.sort.clone(),
+                                    tab.page_size
+                                );
+                            }
+                        });
+                    });
+
+                // Error Panel (Dedicated area for full error messages)
+                let mut clear_error = false;
+                if let Some(error_msg) = &tab.last_error {
+                    let error_msg_cloned = error_msg.clone();
+                    egui::TopBottomPanel::bottom(format!("error_panel_{}", tab.path))
+                        .resizable(true)
+                        .default_height(60.0)
+                        .frame(egui::Frame::group(ui.style())
+                            .fill(ui.visuals().error_fg_color.linear_multiply(0.1))
+                            .stroke(egui::Stroke::new(1.0, ui.visuals().error_fg_color))
+                            .inner_margin(egui::Margin::same(8)))
+                        .show_inside(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("⚠ Error").strong().color(ui.visuals().error_fg_color));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.button("X").on_hover_text("Clear Error").clicked() {
+                                        clear_error = true;
+                                    }
+                                    if ui.button("📋").on_hover_text("Copy Error").clicked() {
+                                        ui.ctx().copy_text(error_msg_cloned.clone());
+                                    }
+                                });
+                            });
+                            egui::ScrollArea::vertical().show(ui, |ui| {
+                                ui.add(egui::Label::new(egui::RichText::new(error_msg_cloned).color(ui.visuals().error_fg_color)).wrap());
+                            });
+                        });
+                }
+                if clear_error {
+                    tab.last_error = None;
+                }
+
                 // Combined Status and Pagination bar at bottom
                 egui::TopBottomPanel::bottom(format!("bottom_bar_{}", tab.path))
                     .min_height(32.0)
@@ -229,7 +325,7 @@ impl<'a> TabViewer for ParquetTabViewer<'a> {
                                 start_row, end_row, tab.total_rows, tab.current_page, total_pages
                             )).weak());
                             
-                            if tab.status.contains("Loading") || tab.status.contains("Error") {
+                            if tab.status.contains("Loading") {
                                 ui.separator();
                                 ui.label(egui::RichText::new(&tab.status).color(ui.visuals().warn_fg_color));
                             }
@@ -244,7 +340,15 @@ impl<'a> TabViewer for ParquetTabViewer<'a> {
                                 ).on_hover_text("Next Page").clicked() 
                                 {
                                     tab.current_page += 1;
-                                    Self::load_page(self.tx.clone(), self.backend.clone(), tab.path.clone(), tab.current_page, tab.page_size);
+                                    Self::load_page(
+                                        self.tx.clone(), 
+                                        self.backend.clone(), 
+                                        tab.path.clone(), 
+                                        tab.current_page, 
+                                        tab.page_size,
+                                        tab.filter.clone(),
+                                        tab.sort.clone()
+                                    );
                                     tab.status = format!("Loading page {}...", tab.current_page);
                                 }
 
@@ -255,7 +359,15 @@ impl<'a> TabViewer for ParquetTabViewer<'a> {
                                 ).on_hover_text("Previous Page").clicked()
                                 {
                                     tab.current_page -= 1;
-                                    Self::load_page(self.tx.clone(), self.backend.clone(), tab.path.clone(), tab.current_page, tab.page_size);
+                                    Self::load_page(
+                                        self.tx.clone(), 
+                                        self.backend.clone(), 
+                                        tab.path.clone(), 
+                                        tab.current_page, 
+                                        tab.page_size,
+                                        tab.filter.clone(),
+                                        tab.sort.clone()
+                                    );
                                     tab.status = format!("Loading page {}...", tab.current_page);
                                 }
                             });
@@ -341,19 +453,23 @@ impl eframe::App for ParquetApp {
                 BackendMessage::RowCount { path, count } => {
                     if let Some(tab) = self.tabs.get_mut(&path) {
                         tab.total_rows = count;
+                        if tab.status.contains("Loading") {
+                             tab.status.clear();
+                        }
                     }
                 }
                 BackendMessage::QueryData { path, rows } => {
                     if let Some(tab) = self.tabs.get_mut(&path) {
                         tab.data = rows;
                         tab.row_count = tab.data.len();
-                        tab.status = format!("Loaded {} rows (Page {})", tab.row_count, tab.current_page);
+                        tab.status.clear(); // Clear loading/ready status
                     }
                 }
                 BackendMessage::Error { path, message } => {
                     if let Some(p) = path {
                         if let Some(tab) = self.tabs.get_mut(&p) {
-                             tab.status = format!("Error: {}", message);
+                            tab.last_error = Some(message.clone());
+                            tab.status = "Query failed".to_string();
                         }
                     } else {
                         println!("Global Error: {}", message);
