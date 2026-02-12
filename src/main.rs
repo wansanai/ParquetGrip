@@ -8,6 +8,7 @@ use std::sync::{Arc, mpsc};
 use std::collections::HashMap;
 use egui_dock::{DockArea, DockState, Style, TabViewer};
 use egui_dock::tab_viewer::OnCloseResponse;
+use serde::{Deserialize, Serialize};
 
 mod backend;
 use backend::{Backend, BackendMessage};
@@ -30,21 +31,28 @@ fn main() -> eframe::Result<()> {
     )
 }
 
+#[derive(Serialize, Deserialize)]
 struct Tab {
     path: String,
     name: String,
+    #[serde(skip)]
     schema: Vec<String>,
+    #[serde(skip)]
     data: Vec<Vec<String>>,
+    #[serde(skip)]
     row_count: usize,
+    #[serde(skip)]
     status: String,
     // Pagination state
     current_page: usize,
     page_size: usize,
+    #[serde(skip)]
     total_rows: usize,
     // Filter and Sort state
     filter: String,
     sort: String,
     // Error state
+    #[serde(skip)]
     last_error: Option<String>,
 }
 
@@ -72,14 +80,32 @@ impl Tab {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(default)]
 struct ParquetApp {
+    #[serde(skip)]
     backend: Arc<Backend>,
+    #[serde(skip)]
     rx: mpsc::Receiver<BackendMessage>,
+    #[serde(skip)]
     tx_to_ui: mpsc::Sender<BackendMessage>,
     // Store tabs data by path
     tabs: HashMap<String, Tab>,
     // Manage UI layout State. Tab identifier is the file path (String).
     dock_state: DockState<String>,
+}
+
+impl Default for ParquetApp {
+    fn default() -> Self {
+        let (tx, rx) = mpsc::channel();
+        Self {
+            backend: Arc::new(Backend::new()),
+            rx,
+            tx_to_ui: tx,
+            tabs: HashMap::new(),
+            dock_state: DockState::new(Vec::new()),
+        }
+    }
 }
 
 impl ParquetApp {
@@ -92,15 +118,56 @@ impl ParquetApp {
         // Customize fonts
         setup_fonts(&cc.egui_ctx);
         
+        let mut app: Self = if let Some(storage) = cc.storage {
+            eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default()
+        } else {
+            Default::default()
+        };
+
+        // Re-initialize transient fields
         let (tx, rx) = mpsc::channel();
-        
-        Self {
-            backend: Arc::new(Backend::new()),
-            rx,
-            tx_to_ui: tx,
-            tabs: HashMap::new(),
-            dock_state: DockState::new(Vec::new()),
+        app.tx_to_ui = tx;
+        app.rx = rx;
+        app.backend = Arc::new(Backend::new());
+
+        // Re-load data for all tabs found in restored session
+        for (path, tab) in app.tabs.iter_mut() {
+            tab.last_error = None;
+            tab.status = "Reloading session...".to_string();
+            let tx_c = app.tx_to_ui.clone();
+            let backend_c = app.backend.clone();
+            let path_c = path.clone();
+            let filter_c = tab.filter.clone();
+            let sort_c = tab.sort.clone();
+            let page = tab.current_page;
+            let page_size = tab.page_size;
+
+            std::thread::spawn(move || {
+                // 1. Path notice
+                let _ = tx_c.send(BackendMessage::FileOpened { path: path_c.clone() });
+                
+                // 2. Load schema
+                if let Ok(s_msg) = backend_c.get_schema(path_c.clone()) {
+                    let _ = tx_c.send(s_msg);
+                }
+
+                // 3. Get row count with filter
+                let f = if filter_c.trim().is_empty() { None } else { Some(filter_c.clone()) };
+                if let Ok(count) = backend_c.get_row_count(path_c.clone(), f) {
+                    let _ = tx_c.send(BackendMessage::RowCount { path: path_c.clone(), count });
+                }
+
+                // 4. Load page
+                let f = if filter_c.trim().is_empty() { None } else { Some(filter_c) };
+                let s = if sort_c.trim().is_empty() { None } else { Some(sort_c) };
+                let offset = (page - 1) * page_size;
+                if let Ok(q_msg) = backend_c.run_query(path_c, f, s, Some(page_size), Some(offset)) {
+                    let _ = tx_c.send(q_msg);
+                }
+            });
         }
+
+        app
     }
 
     fn open_file_dialog(&mut self) {
@@ -453,7 +520,7 @@ impl eframe::App for ParquetApp {
                 BackendMessage::RowCount { path, count } => {
                     if let Some(tab) = self.tabs.get_mut(&path) {
                         tab.total_rows = count;
-                        if tab.status.contains("Loading") {
+                        if tab.status.contains("Loading") || tab.status.contains("Reloading") {
                              tab.status.clear();
                         }
                     }
@@ -508,24 +575,26 @@ impl eframe::App for ParquetApp {
                      });
                  });
              } else {
-                 let mut tab_viewer = ParquetTabViewer { 
-                     tabs: &mut self.tabs,
-                     tx: self.tx_to_ui.clone(),
-                     backend: self.backend.clone(),
-                 };
-                 let mut style = Style::from_egui(ui.style().as_ref());
-                 
-                 // Customize style
-                 style.tab_bar.height = 32.0; 
-                 style.tab.minimum_width = Some(80.0);
-                 
-                 DockArea::new(&mut self.dock_state)
+                let mut tab_viewer = ParquetTabViewer {
+                    tx: self.tx_to_ui.clone(),
+                    backend: self.backend.clone(),
+                    tabs: &mut self.tabs,
+                };
+                let mut style = Style::from_egui(ctx.style().as_ref());
+
+                // Customize style
+                style.tab_bar.height = 32.0; 
+                style.tab.minimum_width = Some(80.0);
+                
+                DockArea::new(&mut self.dock_state)
                     .style(style)
                     .show_inside(ui, &mut tab_viewer);
              }
         });
-        
-        // Removed global status bar in favor of per-tab status
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, eframe::APP_KEY, self);
     }
 }
 

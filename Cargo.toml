@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-
-eframe = "0.33.3"
+serde = { version = "1.0", features = ["derive"] }
+eframe = { version = "0.33.3", features = ["persistence"] }
 egui_extras = { version = "0.33.3", features = ["all_loaders"] } # all_loaders enables image support
-egui_dock = "0.18" # Docking and tabs system
+egui_dock = { version = "0.18", features = ["serde"] } # Docking and tabs system
 duckdb = { version = "1.0.0", features = ["bundled"] } 
 arrow = "54.2.0"
 parquet = "54.2.0"
