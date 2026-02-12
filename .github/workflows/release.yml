@@ -17,15 +17,15 @@ jobs:
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: ParquetGrip.app
-            bundle_path: target/x86_64-apple-darwin/release/bundle/osx/ParquetGrip.app
+            bundle_path: target/release/bundle/osx/ParquetGrip.app
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_name: ParquetGrip.msi
-            bundle_path: target/x86_64-pc-windows-msvc/release/bundle/msi/ParquetGrip.msi
+            bundle_path: target/release/bundle/msi/*.msi
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact_name: parquetgrip.deb
-            bundle_path: target/x86_64-unknown-linux-gnu/release/bundle/debian/*.deb
+            bundle_path: target/release/bundle/debian/*.deb
 
     runs-on: ${{ matrix.os }}
 
@@ -50,11 +50,17 @@ jobs:
       - name: Build and Bundle
         run: cargo bundle --release --target ${{ matrix.target }}
 
+      - name: "Debug: List target directory"
+        if: always()
+        run: |
+          echo "Current directory: $(pwd)"
+          find target -maxdepth 5 -type f \( -name "*.deb" -o -name "*.msi" -o -name "*.app" \) || true
+
       - name: Prepare Artifacts (macOS - Zip app)
         if: matrix.os == 'macos-latest'
         run: |
-          cd target/${{ matrix.target }}/release/bundle/osx
-          zip -r ../../../../../ParquetGrip-macOS.zip ParquetGrip.app
+          cd target/release/bundle/osx
+          zip -r ../../../ParquetGrip-macOS.zip ParquetGrip.app
 
       - name: Prepare Artifacts (Windows)
         if: matrix.os == 'windows-latest'
