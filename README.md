@@ -1,5 +1,8 @@
 # 📊 ParquetGrip
 
+[English](./README.en.md) | 简体中文
+
+
 **ParquetGrip** 是一款基于 Rust 开发的高性能 Parquet 文件跨平台浏览器。它利用 **DuckDB** 作为核心查询引擎，结合 **egui** 打造极速、流畅的数据预览体验。
 
 ![ParquetGrip Icon](./assets/icon.png)
@@ -43,6 +46,12 @@ cargo bundle --release
 - **UI Framework**: [egui](https://github.com/emilk/egui) & [egui_dock](https://github.com/Adanos020/egui_dock)
 - **Serialization**: [Serde](https://serde.rs/)
 - **CI/CD**: GitHub Actions (自动化多平台发布)
+
+## ⚠️ 免责声明与贡献
+
+本项目目前主要由开发者在 **macOS** 环境下开发。虽然已完成了 Windows 和 Linux 的适配配置，但由于缺乏设备，**其他平台尚未经过充分测试**。
+
+如果您在非 macOS 平台上使用时遇到问题，或者愿意帮助完善其他平台的兼容性，**非常欢迎提交 Issue 或 Pull Request (PR)**！
 
 ## 📝 许可证
 
