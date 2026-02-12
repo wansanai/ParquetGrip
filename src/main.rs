@@ -5,6 +5,9 @@
 use eframe::egui;
 use egui_extras::Column;
 use std::sync::{Arc, mpsc};
+use std::collections::HashMap;
+use egui_dock::{DockArea, DockState, Style, TabViewer};
+use egui_dock::tab_viewer::OnCloseResponse;
 
 mod backend;
 use backend::{Backend, BackendMessage};
@@ -58,8 +61,10 @@ struct ParquetApp {
     backend: Arc<Backend>,
     rx: mpsc::Receiver<BackendMessage>,
     tx_to_ui: mpsc::Sender<BackendMessage>,
-    tabs: Vec<Tab>,
-    active_tab_index: Option<usize>,
+    // Store tabs data by path
+    tabs: HashMap<String, Tab>,
+    // Manage UI layout State. Tab identifier is the file path (String).
+    dock_state: DockState<String>,
 }
 
 impl ParquetApp {
@@ -78,8 +83,8 @@ impl ParquetApp {
             backend: Arc::new(Backend::new()),
             rx,
             tx_to_ui: tx,
-            tabs: Vec::new(),
-            active_tab_index: None,
+            tabs: HashMap::new(),
+            dock_state: DockState::new(Vec::new()),
         }
     }
 
@@ -96,9 +101,9 @@ impl ParquetApp {
                 let path = path_buf.to_string_lossy().to_string();
                 
                 // Add tab if not already open
-                if !self.tabs.iter().any(|t| t.path == path) {
-                    self.tabs.push(Tab::new(path.clone()));
-                    self.active_tab_index = Some(self.tabs.len() - 1);
+                if !self.tabs.contains_key(&path) {
+                    self.tabs.insert(path.clone(), Tab::new(path.clone()));
+                    self.dock_state.push_to_focused_leaf(path.clone());
                     
                     let backend_c = backend.clone();
                     let tx_c = tx.clone();
@@ -126,12 +131,115 @@ impl ParquetApp {
                         }
                     });
                 } else {
-                    // Switch to existing tab
-                    if let Some(idx) = self.tabs.iter().position(|t| t.path == path) {
-                        self.active_tab_index = Some(idx);
-                    }
+                    // If already open, we could try to focus it, but DockState doesn't make it trivial to "find and focus" 
+                    // without traversing. For now, we simple do nothing or maybe user will find it.
+                    // Improving this would be a nice polish later.
                 }
             }
+        }
+    }
+}
+
+struct ParquetTabViewer<'a> {
+    tabs: &'a mut HashMap<String, Tab>,
+}
+
+impl<'a> TabViewer for ParquetTabViewer<'a> {
+    type Tab = String;
+
+    fn title(&mut self, tab_id: &mut Self::Tab) -> egui::WidgetText {
+        if let Some(tab) = self.tabs.get(tab_id) {
+            if tab.name.chars().count() > 20 {
+                format!("{}...", tab.name.chars().take(17).collect::<String>()).into()
+            } else {
+                tab.name.clone().into()
+            }
+        } else {
+            "Loading...".into()
+        }
+    }
+
+    fn on_close(&mut self, tab_id: &mut Self::Tab) -> OnCloseResponse {
+        self.tabs.remove(tab_id);
+        OnCloseResponse::Close
+    }
+
+    fn on_tab_button(&mut self, tab_id: &mut Self::Tab, response: &egui::Response) {
+        if let Some(tab) = self.tabs.get(tab_id) {
+            response.clone().on_hover_text(format!("Full Name: {}\nPath: {}", tab.name, tab.path));
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, tab_id: &mut Self::Tab) {
+        if let Some(tab) = self.tabs.get(tab_id) {
+            ui.vertical(|ui| {
+                // Determine content size manually or let ScrollArea handle it.
+                // Since TableBuilder likes to take available size, we put it in a central area minus status bar.
+                
+                // Content area
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE) // No extra frame inside the tab
+                    .show_inside(ui, |ui| {
+                        
+                        // Status bar at bottom
+                        egui::TopBottomPanel::bottom(format!("status_{}", tab.path))
+                            .show_inside(ui, |ui| {
+                                ui.label(&tab.status);
+                            });
+
+                        // Main table area
+                        egui::CentralPanel::default().show_inside(ui, |ui| {
+                             egui::ScrollArea::horizontal()
+                                .id_salt(format!("scroll_{}", tab.path)) // Unique ID for scroll state
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    let mut table = egui_extras::TableBuilder::new(ui)
+                                        .striped(true)
+                                        .resizable(true)
+                                        .vscroll(true)
+                                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
+                                    
+                                    // Row number column
+                                    table = table.column(Column::initial(40.0).at_least(40.0).resizable(true));
+                                    
+                                    for _ in 0..tab.schema.len() {
+                                        table = table.column(Column::initial(150.0).at_least(100.0).resizable(true));
+                                    }
+                                    
+                                    table.header(28.0, |mut header| {
+                                            header.col(|ui| { ui.strong("#"); });
+                                            for name in &tab.schema {
+                                                header.col(|ui| { ui.strong(name); });
+                                            }
+                                        })
+                                        .body(|body| {
+                                            body.rows(26.0, tab.data.len(), |mut row| {
+                                                let row_index = row.index();
+                                                row.col(|ui| { ui.label(row_index.to_string()); }); 
+                                                
+                                                if let Some(row_data) = tab.data.get(row_index) {
+                                                    for (col_idx, _col_name) in tab.schema.iter().enumerate() {
+                                                        if let Some(cell) = row_data.get(col_idx) {
+                                                            row.col(|ui| {
+                                                                if cell == "(null)" {
+                                                                    ui.label(egui::RichText::new(cell).color(ui.visuals().weak_text_color()));
+                                                                } else {
+                                                                    ui.label(cell);
+                                                                }
+                                                            });
+                                                        }
+                                                    }
+                                                }
+                                            });
+                                        });
+                                });
+                        });
+                    });
+            });
+        } else {
+            ui.centered_and_justified(|ui| {
+                ui.label("Tab data missing or loading error.");
+            });
         }
     }
 }
@@ -142,18 +250,18 @@ impl eframe::App for ParquetApp {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 BackendMessage::FileOpened { path } => {
-                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.path == path) {
+                    if let Some(tab) = self.tabs.get_mut(&path) {
                         tab.status = "File opened, loading schema...".to_string();
                     }
                 }
                 BackendMessage::Schema { path, columns } => {
-                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.path == path) {
+                    if let Some(tab) = self.tabs.get_mut(&path) {
                         tab.schema = columns;
                         tab.status = "Schema loaded, running query...".to_string();
                     }
                 }
                 BackendMessage::QueryData { path, rows } => {
-                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.path == path) {
+                    if let Some(tab) = self.tabs.get_mut(&path) {
                         tab.data = rows;
                         tab.row_count = tab.data.len();
                         tab.status = format!("Loaded {} rows", tab.row_count);
@@ -161,17 +269,17 @@ impl eframe::App for ParquetApp {
                 }
                 BackendMessage::Error { path, message } => {
                     if let Some(p) = path {
-                        if let Some(tab) = self.tabs.iter_mut().find(|t| t.path == p) {
+                        if let Some(tab) = self.tabs.get_mut(&p) {
                              tab.status = format!("Error: {}", message);
                         }
                     } else {
-                        // Global error or something?
                         println!("Global Error: {}", message);
                     }
                 }
             }
         }
 
+        // Menu Bar
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
@@ -186,6 +294,7 @@ impl eframe::App for ParquetApp {
             });
         });
 
+        // Main Dock Area
         egui::CentralPanel::default().show(ctx, |ui| {
              if self.tabs.is_empty() {
                  ui.centered_and_justified(|ui| {
@@ -200,113 +309,20 @@ impl eframe::App for ParquetApp {
                      });
                  });
              } else {
-                // Tab Bar
-                ui.horizontal_wrapped(|ui| {
-                    let mut tab_to_close = None;
-                    for (i, tab) in self.tabs.iter().enumerate() {
-                        let is_active = self.active_tab_index == Some(i);
-                        
-                        let display_name = if tab.name.chars().count() > 25 {
-                            let truncated: String = tab.name.chars().take(22).collect();
-                            format!("{}...", truncated)
-                        } else {
-                            tab.name.clone()
-                        };
-
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
-                            let response = ui.selectable_label(is_active, &display_name)
-                                .on_hover_text(format!("Full Name: {}\nPath: {}", tab.name, tab.path));
-                            
-                            if response.clicked() {
-                                self.active_tab_index = Some(i);
-                            }
-                            if ui.small_button("x").on_hover_text("Close Tab").clicked() {
-                                tab_to_close = Some(i);
-                            }
-                        });
-                        ui.add_space(5.0);
-                        ui.separator();
-                        ui.add_space(5.0);
-                    }
-
-                    if let Some(i) = tab_to_close {
-                        self.tabs.remove(i);
-                        if self.tabs.is_empty() {
-                            self.active_tab_index = None;
-                        } else {
-                            let current_idx = self.active_tab_index.unwrap_or(0);
-                            if i <= current_idx {
-                                self.active_tab_index = Some(current_idx.saturating_sub(1).min(self.tabs.len() - 1));
-                            }
-                        }
-                    }
-                });
-
-                ui.add_space(4.0);
-                ui.separator();
-
-                if let Some(idx) = self.active_tab_index {
-                    if let Some(active_tab) = self.tabs.get(idx) {
-                        egui::Frame::NONE
-                            .inner_margin(8.0)
-                            .show(ui, |ui| {
-                                egui::ScrollArea::horizontal()
-                                    .auto_shrink([false, false])
-                                    .show(ui, |ui| {
-                                        let mut table = egui_extras::TableBuilder::new(ui)
-                                            .striped(true)
-                                            .resizable(true)
-                                            .vscroll(true)
-                                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
-                                        
-                                        table = table.column(Column::initial(40.0).at_least(40.0).resizable(true));
-                                        for _ in 0..active_tab.schema.len() {
-                                            table = table.column(Column::initial(150.0).at_least(100.0).resizable(true));
-                                        }
-                                        
-                                        table.header(28.0, |mut header| {
-                                                header.col(|ui| { ui.strong("#"); });
-                                                for name in &active_tab.schema {
-                                                    header.col(|ui| { ui.strong(name); });
-                                                }
-                                            })
-                                            .body(|body| {
-                                                body.rows(26.0, active_tab.data.len(), |mut row| {
-                                                    let row_index = row.index();
-                                                    row.col(|ui| { ui.label(row_index.to_string()); }); 
-                                                    
-                                                    if let Some(row_data) = active_tab.data.get(row_index) {
-                                                        for i in 0..active_tab.schema.len() {
-                                                            if let Some(cell) = row_data.get(i) {
-                                                                row.col(|ui| {
-                                                                    if cell == "(null)" {
-                                                                        ui.label(egui::RichText::new(cell).color(ui.visuals().weak_text_color()));
-                                                                    } else {
-                                                                        ui.label(cell);
-                                                                    }
-                                                                });
-                                                            }
-                                                        }
-                                                    }
-                                                });
-                                            });
-                                    });
-                            });
-                    }
-                }
+                 let mut tab_viewer = ParquetTabViewer { tabs: &mut self.tabs };
+                 let mut style = Style::from_egui(ui.style().as_ref());
+                 
+                 // Customize style
+                 style.tab_bar.height = 32.0; 
+                 style.tab.minimum_width = Some(80.0);
+                 
+                 DockArea::new(&mut self.dock_state)
+                    .style(style)
+                    .show_inside(ui, &mut tab_viewer);
              }
         });
         
-        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-            if let Some(idx) = self.active_tab_index {
-                if let Some(tab) = self.tabs.get(idx) {
-                    ui.label(&tab.status);
-                }
-            } else {
-                ui.label("Ready");
-            }
-        });
+        // Removed global status bar in favor of per-tab status
     }
 }
 
