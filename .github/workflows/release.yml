@@ -15,17 +15,17 @@ jobs:
       matrix:
         include:
           - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: ParquetGrip-macOS-arm64
+          - os: macos-latest
             target: x86_64-apple-darwin
-            artifact_name: ParquetGrip.app
-            bundle_path: target/x86_64-apple-darwin/release/bundle/osx/ParquetGrip.app
+            artifact_name: ParquetGrip-macOS-x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact_name: ParquetGrip.exe
-            bundle_path: target/x86_64-pc-windows-msvc/release/ParquetGrip.exe
+            artifact_name: ParquetGrip-Windows
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact_name: parquetgrip.deb
-            bundle_path: target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
+            artifact_name: ParquetGrip-Linux
 
     runs-on: ${{ matrix.os }}
 
@@ -44,41 +44,60 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libssl-dev pkg-config
 
+      # Windows 只需编译，不需要 cargo-bundle
       - name: Install cargo-bundle
+        if: matrix.os != 'windows-latest'
         run: cargo install cargo-bundle
 
       - name: Build and Bundle
+        if: matrix.os != 'windows-latest'
         run: cargo bundle --release --target ${{ matrix.target }}
+
+      - name: Build
+        if: matrix.os == 'windows-latest'
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: "Debug: List target directory"
         if: always()
+        shell: bash
         run: |
           echo "Current directory: $(pwd)"
-          find target -maxdepth 5 \( -name "*.deb" -o -name "*.msi" -o -name "*.app" -o -name "*.exe" \) || true
+          find target -maxdepth 5 \( -name "*.deb" -o -name "*.dmg" -o -name "*.app" -o -name "*.exe" \) || true
 
+      # === macOS: 生成 DMG ===
       - name: Prepare Artifacts (macOS - Create DMG)
         if: matrix.os == 'macos-latest'
         run: |
           mkdir -p dmg_staging
-          cp -r target/x86_64-apple-darwin/release/bundle/osx/ParquetGrip.app dmg_staging/
+          cp -r target/${{ matrix.target }}/release/bundle/osx/ParquetGrip.app dmg_staging/
           ln -s /Applications dmg_staging/Applications
-          hdiutil create -volname "ParquetGrip" -srcfolder dmg_staging -ov -format UDZO ParquetGrip-macOS.dmg
+          hdiutil create -volname "ParquetGrip" -srcfolder dmg_staging -ov -format UDZO ${{ matrix.artifact_name }}.dmg
 
+      # === Windows: 便携式 EXE ===
       - name: Prepare Artifacts (Windows - Portable EXE)
         if: matrix.os == 'windows-latest'
-        run: cp target/x86_64-pc-windows-msvc/release/ParquetGrip.exe ParquetGrip-Windows.exe
+        shell: bash
+        run: cp target/${{ matrix.target }}/release/ParquetGrip.exe ${{ matrix.artifact_name }}.exe
 
-      - name: Prepare Artifacts (Linux)
+      # === Linux: DEB 安装包 + 便携式二进制 ===
+      - name: Prepare Artifacts (Linux - DEB)
         if: matrix.os == 'ubuntu-latest'
-        run: cp ${{ matrix.bundle_path }} ParquetGrip-Linux.deb
+        run: cp target/${{ matrix.target }}/release/bundle/deb/*.deb ${{ matrix.artifact_name }}.deb
 
+      - name: Prepare Artifacts (Linux - Portable Binary)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          tar -czf ${{ matrix.artifact_name }}.tar.gz -C target/${{ matrix.target }}/release ParquetGrip
+
+      # === 上传到 GitHub Release ===
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            ParquetGrip-macOS.dmg
-            ParquetGrip-Windows.exe
-            ParquetGrip-Linux.deb
+            ParquetGrip-*.dmg
+            ParquetGrip-*.exe
+            ParquetGrip-*.deb
+            ParquetGrip-*.tar.gz
           draft: true # 先作为草稿发布，方便手动确认
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
