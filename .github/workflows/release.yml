@@ -20,8 +20,8 @@ jobs:
             bundle_path: target/x86_64-apple-darwin/release/bundle/osx/ParquetGrip.app
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact_name: ParquetGrip.msi
-            bundle_path: target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+            artifact_name: ParquetGrip.exe
+            bundle_path: target/x86_64-pc-windows-msvc/release/ParquetGrip.exe
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact_name: parquetgrip.deb
@@ -54,17 +54,19 @@ jobs:
         if: always()
         run: |
           echo "Current directory: $(pwd)"
-          find target -maxdepth 5 \( -name "*.deb" -o -name "*.msi" -o -name "*.app" \) || true
+          find target -maxdepth 5 \( -name "*.deb" -o -name "*.msi" -o -name "*.app" -o -name "*.exe" \) || true
 
-      - name: Prepare Artifacts (macOS - Zip app)
+      - name: Prepare Artifacts (macOS - Create DMG)
         if: matrix.os == 'macos-latest'
         run: |
-          cd target/x86_64-apple-darwin/release/bundle/osx
-          zip -r ../../../../../ParquetGrip-macOS.zip ParquetGrip.app
+          mkdir -p dmg_staging
+          cp -r target/x86_64-apple-darwin/release/bundle/osx/ParquetGrip.app dmg_staging/
+          ln -s /Applications dmg_staging/Applications
+          hdiutil create -volname "ParquetGrip" -srcfolder dmg_staging -ov -format UDZO ParquetGrip-macOS.dmg
 
-      - name: Prepare Artifacts (Windows)
+      - name: Prepare Artifacts (Windows - Portable EXE)
         if: matrix.os == 'windows-latest'
-        run: cp ${{ matrix.bundle_path }} ParquetGrip-Windows.msi
+        run: cp target/x86_64-pc-windows-msvc/release/ParquetGrip.exe ParquetGrip-Windows.exe
 
       - name: Prepare Artifacts (Linux)
         if: matrix.os == 'ubuntu-latest'
@@ -74,8 +76,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            ParquetGrip-macOS.zip
-            ParquetGrip-Windows.msi
+            ParquetGrip-macOS.dmg
+            ParquetGrip-Windows.exe
             ParquetGrip-Linux.deb
           draft: true # 先作为草稿发布，方便手动确认
         env:
